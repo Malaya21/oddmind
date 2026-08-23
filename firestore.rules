@@ -1,0 +1,119 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isValidUserProfile() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['displayName', 'createdAt', 'lastSeenAt', 'stats'])
+        && data.createdAt is string
+        && data.lastSeenAt is string
+        && (data.displayName == null || data.displayName is string)
+        && data.stats.keys().hasAll(['gamesPlayed', 'gamesWon', 'totalScore'])
+        && data.stats.gamesPlayed is int
+        && data.stats.gamesWon is int
+        && data.stats.totalScore is int;
+    }
+
+    function userProfileUpdateAllowed() {
+      let diff = request.resource.data.diff(resource.data);
+      return diff.changedKeys().hasOnly(['displayName', 'lastSeenAt', 'stats'])
+        && (request.resource.data.displayName == null
+            || request.resource.data.displayName is string);
+    }
+
+    // --- Users (profile) ---
+    // Owner may read/create/update own profile. UID comes from Firebase Auth token.
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create: if isSelf(uid) && isValidUserProfile();
+      allow update: if isSelf(uid) && userProfileUpdateAllowed();
+      allow delete: if false;
+    }
+
+    // --- Room code locks ---
+    match /roomCodes/{code} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // --- Rooms ---
+    match /rooms/{roomId} {
+      allow read: if isAuthenticated() && isRoomMember(roomId);
+      allow write: if false;
+
+      match /players/{uid} {
+        allow read: if isAuthenticated() && isRoomMember(roomId);
+        allow create, delete: if false;
+        allow update: if isSelf(uid)
+          && request.resource.data.diff(resource.data).changedKeys()
+              .hasOnly(['connectionStatus', 'lastSeenAt']);
+      }
+    }
+
+    // --- Games (public state) ---
+    match /games/{gameId} {
+      allow read: if isAuthenticated() && isGamePlayer(gameId);
+      allow write: if false;
+
+      match /players/{uid} {
+        allow read: if isAuthenticated() && isGamePlayer(gameId);
+        allow write: if false;
+      }
+
+      match /secrets {
+        allow read, write: if false;
+      }
+
+      match /signals/{signalId} {
+        allow read, write, delete: if isAuthenticated() && isGamePlayer(gameId);
+      }
+
+      match /rounds/{roundId} {
+        allow read: if isAuthenticated() && isGamePlayer(gameId);
+        allow write: if false;
+
+        match /votes/{voterUid} {
+          allow read: if false;
+          allow write: if false;
+        }
+
+        match /messages/{messageId} {
+          allow read: if isAuthenticated() && isGamePlayer(gameId);
+          allow create: if false;
+        }
+      }
+    }
+
+    match /gameResults/{gameId} {
+      allow read: if isAuthenticated() && isGamePlayer(gameId);
+      allow write: if false;
+    }
+
+    match /wordPairs/{pairId} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+    // --- Helpers (require denormalized membership docs in production) ---
+    function isRoomMember(roomId) {
+      return exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));
+    }
+
+    function isGamePlayer(gameId) {
+      return exists(/databases/$(database)/documents/games/$(gameId)/players/$(request.auth.uid))
+        || (resource != null && 'playerIds' in resource.data && request.auth.uid in resource.data.playerIds);
+    }
+  }
+}
+
+// DEVELOPMENT ONLY: use firestore.rules.dev with relaxed rules locally.
+// Never deploy permissive rules to production.
