@@ -5,3 +5,5 @@ export * from "@/types/room";
 export * from "@/types/scoring";
 export * from "@/types/user";
 export * from "@/types/word-pair";
+export * from "@/types/mindgrid";
+export * from "@/types/quick-challenge";

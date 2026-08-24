@@ -24,6 +24,13 @@ export class UnauthorizedError extends OddMindError {
   }
 }
 
+export class ForbiddenError extends OddMindError {
+  constructor(message = "Forbidden", code = "FORBIDDEN") {
+    super(code, message, 403);
+    this.name = "ForbiddenError";
+  }
+}
+
 export class ConflictError extends OddMindError {
   constructor(code: string, message: string) {
     super(code, message, 409);

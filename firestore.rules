@@ -103,6 +103,30 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // --- MindGrid Solo Deduction ---
+    match /mindgridProgress/{uid} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+    }
+
+    match /mindgridSessions/{sessionId} {
+      allow read, write: if false;
+    }
+
+    // --- MindGrid Quick Challenges ---
+    match /quickChallengeProgress/{uid} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+    }
+
+    match /quickChallengeSessions/{sessionId} {
+      allow read, write: if false;
+    }
+
+    match /quickPlaySessions/{playId} {
+      allow read, write: if false;
+    }
+
     // --- Helpers (require denormalized membership docs in production) ---
     function isRoomMember(roomId) {
       return exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));

@@ -1,0 +1,80 @@
+<svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="oddmind-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <linearGradient id="odd-gradient-primary" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+
+    <linearGradient id="odd-gradient-node" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#818cf8" />
+    </linearGradient>
+
+    <linearGradient id="odd-gradient-anomaly" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f43f5e" />
+      <stop offset="100%" stop-color="#fb923c" />
+    </linearGradient>
+
+    <linearGradient id="odd-border-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8" />
+      <stop offset="50%" stop-color="#818cf8" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#c084fc" stop-opacity="0.8" />
+    </linearGradient>
+  </defs>
+
+  <path
+    d="M60 6 L106 32 V88 L60 114 L14 88 V32 Z"
+    fill="#090d16"
+    stroke="url(#odd-border-gradient)"
+    stroke-width="2.5"
+    stroke-linejoin="round"
+  />
+
+  <path
+    d="M60 22 L90 40 V80 L60 98 L30 80 V40 Z"
+    stroke="url(#odd-gradient-primary)"
+    stroke-width="1.5"
+    stroke-dasharray="3 3"
+    stroke-opacity="0.5"
+  />
+
+  <line x1="60" y1="22" x2="60" y2="60" stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.6" />
+  <line x1="90" y1="40" x2="60" y2="60" stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.6" />
+  <line x1="90" y1="80" x2="60" y2="60" stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.6" />
+  <line x1="60" y1="98" x2="60" y2="60" stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.6" />
+  <line x1="30" y1="80" x2="60" y2="60" stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.6" />
+  <line x1="30" y1="40" x2="60" y2="60" stroke="#6366f1" stroke-width="1.5" stroke-opacity="0.6" />
+
+  <circle cx="60" cy="22" r="3.5" fill="url(#odd-gradient-node)" filter="url(#oddmind-glow)" />
+  <circle cx="90" cy="40" r="3.5" fill="url(#odd-gradient-node)" />
+  <circle cx="90" cy="80" r="3.5" fill="url(#odd-gradient-node)" />
+  <circle cx="60" cy="98" r="3.5" fill="url(#odd-gradient-node)" filter="url(#oddmind-glow)" />
+  <circle cx="30" cy="80" r="3.5" fill="url(#odd-gradient-node)" />
+  <circle cx="30" cy="40" r="3.5" fill="url(#odd-gradient-node)" />
+
+  <circle
+    cx="72"
+    cy="48"
+    r="7.5"
+    fill="url(#odd-gradient-anomaly)"
+    filter="url(#oddmind-glow)"
+  />
+  <circle
+    cx="72"
+    cy="48"
+    r="11"
+    stroke="#f43f5e"
+    stroke-width="1.2"
+    stroke-opacity="0.8"
+    stroke-dasharray="2 2"
+  />
+
+  <circle cx="60" cy="60" r="5" fill="#ffffff" filter="url(#oddmind-glow)" />
+  <circle cx="60" cy="60" r="2.5" fill="#6366f1" />
+</svg>
