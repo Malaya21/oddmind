@@ -37,10 +37,11 @@ import { OddMindError } from "@/lib/errors";
 import { cn } from "@/lib/utils";
 
 export default function AdminPage() {
-  const { user, getIdToken, signOut } = useAuth();
+  const { user, getIdToken, signInWithGoogle, signOut } = useAuth();
   const [email, setEmail] = useState("sahomalaya21@gmail.com");
   const [passcode, setPasscode] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
+  const [signingInGoogle, setSigningInGoogle] = useState(false);
   const [purging, setPurging] = useState(false);
   const [cleaningDb, setCleaningDb] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState(false);
@@ -69,10 +70,10 @@ export default function AdminPage() {
     try {
       const token =
         overrideToken ||
-        (await getIdToken()) ||
         (typeof window !== "undefined"
           ? localStorage.getItem("oddmind_id_token")
-          : null);
+          : null) ||
+        (await getIdToken());
       if (!token) return;
       const data = await adminGetStatus(token);
       setStatusData(data);
@@ -107,6 +108,31 @@ export default function AdminPage() {
     }
   }
 
+  async function handleGoogleAdminLogin() {
+    setSigningInGoogle(true);
+    try {
+      const authUser = await signInWithGoogle();
+      if (authUser?.email?.toLowerCase() === "sahomalaya21@gmail.com") {
+        setLocalAdminEmail(authUser.email);
+        const token = await getIdToken();
+        if (token && typeof window !== "undefined") {
+          localStorage.setItem("oddmind_id_token", token);
+          localStorage.setItem("oddmind_email", authUser.email);
+          localStorage.setItem("oddmind_uid", authUser.uid);
+        }
+        toast.success("Authenticated with Google as Super Admin!");
+        if (token) await fetchStatus(token);
+      } else {
+        toast.error(`Access denied. ${authUser?.email || "Account"} is not an authorized Super Admin.`);
+      }
+    } catch (err) {
+      console.warn("[google_admin_login_error]", err);
+      toast.error("Google sign-in was cancelled or failed.");
+    } finally {
+      setSigningInGoogle(false);
+    }
+  }
+
   async function handlePurgeAll() {
     if (
       !confirm(
@@ -119,10 +145,10 @@ export default function AdminPage() {
     setPurging(true);
     try {
       const token =
-        (await getIdToken()) ||
         (typeof window !== "undefined"
           ? localStorage.getItem("oddmind_id_token")
-          : null);
+          : null) ||
+        (await getIdToken());
       if (!token)
         throw new OddMindError("NOT_AUTHENTICATED", "Admin auth missing.", 401);
       const res = await adminPurgeAll(token);
@@ -149,10 +175,10 @@ export default function AdminPage() {
     setCleaningDb(true);
     try {
       const token =
-        (await getIdToken()) ||
         (typeof window !== "undefined"
           ? localStorage.getItem("oddmind_id_token")
-          : null);
+          : null) ||
+        (await getIdToken());
       if (!token)
         throw new OddMindError("NOT_AUTHENTICATED", "Admin auth missing.", 401);
       const res = await adminCleanDb(token);
@@ -227,7 +253,7 @@ export default function AdminPage() {
                 Super Admin Login
               </h1>
               <p className="text-xs text-muted-foreground">
-                Restricted area. Please authenticate as{" "}
+                Restricted area. Authenticate as{" "}
                 <code className="text-amber-300 font-mono">
                   sahomalaya21@gmail.com
                 </code>
@@ -236,7 +262,42 @@ export default function AdminPage() {
             </div>
 
             <Card className="border-amber-500/30 bg-card/60 backdrop-blur shadow-lg">
-              <CardContent className="pt-6">
+              <CardContent className="pt-6 space-y-5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleGoogleAdminLogin}
+                  disabled={signingInGoogle}
+                  className="w-full inline-flex items-center justify-center gap-2 border-amber-500/40 hover:bg-amber-950/20 text-foreground text-sm h-10 font-medium"
+                >
+                  <svg className="size-4" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                    />
+                  </svg>
+                  <span>{signingInGoogle ? "Authenticating..." : "1-Click Login with Google"}</span>
+                </Button>
+
+                <div className="relative flex items-center justify-center">
+                  <span className="absolute inset-x-0 h-px bg-border/60" />
+                  <span className="relative bg-card px-3 text-[11px] uppercase tracking-wider text-muted-foreground">
+                    Or with Passcode
+                  </span>
+                </div>
+
                 <form onSubmit={handleLogin} className="space-y-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-foreground">
@@ -271,7 +332,7 @@ export default function AdminPage() {
                     disabled={loggingIn}
                     className="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold text-sm"
                   >
-                    {loggingIn ? "Authenticating..." : "Unlock Admin Dashboard"}
+                    {loggingIn ? "Authenticating..." : "Unlock with Passcode"}
                   </Button>
                 </form>
               </CardContent>

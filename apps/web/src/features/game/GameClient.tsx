@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/features/auth/AuthContextProvider";
 import {
@@ -45,6 +45,8 @@ import {
   Trophy,
   Users,
   Vote as VoteIcon,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { toast } from "sonner";
 import { MicController } from "@/features/game/MicController";
@@ -97,6 +99,18 @@ export function GameClient({ gameId }: GameClientProps) {
   // Voice & Speaking states
   const [isMySpeaking, setIsMySpeaking] = useState(false);
   const [remoteSpeakingMap, setRemoteSpeakingMap] = useState<Record<string, boolean>>({});
+  const [isAudioDeafened, setIsAudioDeafened] = useState(false);
+
+  const toggleMasterAudio = useCallback(() => {
+    const nextDeafened = !isAudioDeafened;
+    setIsAudioDeafened(nextDeafened);
+    webRtcVoiceService.setMasterMuted(nextDeafened);
+    if (nextDeafened) {
+      toast.info("Incoming voice chat muted.");
+    } else {
+      toast.info("Incoming voice chat unmuted.");
+    }
+  }, [isAudioDeafened]);
 
   const realtimeService = useMemo(() => new FirebaseGameRealtimeService(), []);
 
@@ -149,14 +163,17 @@ export function GameClient({ gameId }: GameClientProps) {
     };
   }, []);
 
+  const localStreamRef = useRef<MediaStream | null>(null);
+
   // Sync WebRTC peer list when active players are loaded
   useEffect(() => {
     if (view?.activePlayerIds && user?.uid) {
-      webRtcVoiceService.joinVoice(gameId, user.uid, view.activePlayerIds);
+      webRtcVoiceService.joinVoice(gameId, user.uid, view.activePlayerIds, localStreamRef.current, getIdToken);
     }
-  }, [gameId, user?.uid, view?.activePlayerIds]);
+  }, [gameId, user?.uid, view?.activePlayerIds, getIdToken]);
 
   const handleStreamChange = useCallback((stream: MediaStream | null) => {
+    localStreamRef.current = stream;
     webRtcVoiceService.updateLocalStream(stream);
   }, []);
 
@@ -311,7 +328,32 @@ export function GameClient({ gameId }: GameClientProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {/* Master Incoming Audio Deafen / Mute Toggle */}
+          <Button
+            variant={isAudioDeafened ? "outline" : "secondary"}
+            size="sm"
+            onClick={toggleMasterAudio}
+            className={`gap-1.5 text-xs font-medium ${
+              isAudioDeafened
+                ? "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20"
+                : "border-border/80 bg-card/60 hover:bg-card text-foreground"
+            }`}
+            title={isAudioDeafened ? "Unmute incoming voice chat" : "Mute incoming voice chat"}
+          >
+            {isAudioDeafened ? (
+              <>
+                <VolumeX className="size-3.5 text-destructive" />
+                <span>Audio Muted</span>
+              </>
+            ) : (
+              <>
+                <Volume2 className="size-3.5 text-primary" />
+                <span>Audio On</span>
+              </>
+            )}
+          </Button>
+
           <MicController
             isEliminated={isEliminated}
             onSpeakingChange={setIsMySpeaking}

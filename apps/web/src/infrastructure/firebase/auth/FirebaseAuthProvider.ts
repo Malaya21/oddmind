@@ -1,9 +1,11 @@
 "use client";
 
 import {
+  GoogleAuthProvider,
   onAuthStateChanged as firebaseOnAuthStateChanged,
   signInAnonymously as firebaseSignInAnonymously,
   signInWithCustomToken as firebaseSignInWithCustomToken,
+  signInWithPopup,
   signOut as firebaseSignOut,
 } from "firebase/auth";
 import type { AuthProvider } from "@/services/AuthProvider";
@@ -77,6 +79,31 @@ export class FirebaseAuthProvider implements AuthProvider {
 
     const credential = await firebaseSignInAnonymously(auth);
     return mapUser(credential.user);
+  }
+
+  async signInWithGoogle(): Promise<AuthUser> {
+    const auth = getFirebaseAuth();
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    const credential = await signInWithPopup(auth, provider);
+    const user = credential.user;
+    const idToken = await user.getIdToken();
+    cachedIdToken = idToken;
+    cachedUid = user.uid;
+    cachedEmail = user.email;
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("oddmind_id_token", idToken);
+        localStorage.setItem("oddmind_uid", user.uid);
+        if (user.email) {
+          localStorage.setItem("oddmind_email", user.email);
+        }
+        if (user.displayName) {
+          localStorage.setItem(`oddmind_name_${user.uid}`, user.displayName);
+        }
+      } catch {}
+    }
+    return mapUser(user);
   }
 
   async signOut(): Promise<void> {

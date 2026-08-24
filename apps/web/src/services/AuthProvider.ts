@@ -2,6 +2,7 @@ import type { AuthUser, Unsubscribe } from "@/types";
 
 export interface AuthProvider {
   signInAnonymously(): Promise<AuthUser>;
+  signInWithGoogle?(): Promise<AuthUser>;
   signInWithEmail?(email: string, password: string): Promise<AuthUser>;
   signOut(): Promise<void>;
   getCurrentUser(): AuthUser | null;

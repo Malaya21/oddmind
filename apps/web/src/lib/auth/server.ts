@@ -20,10 +20,19 @@ export async function verifyIdToken(
 
   try {
     const decoded = await getAdminAuth().verifyIdToken(token);
+    let email = decoded.email ?? (decoded as Record<string, any>).email ?? null;
+
+    if (!email && decoded.uid) {
+      try {
+        const userRecord = await getAdminAuth().getUser(decoded.uid);
+        email = userRecord.email ?? null;
+      } catch {}
+    }
+
     return {
       uid: decoded.uid,
       isAnonymous: decoded.firebase.sign_in_provider === "anonymous",
-      email: decoded.email ?? null,
+      email,
     };
   } catch (error) {
     const message =

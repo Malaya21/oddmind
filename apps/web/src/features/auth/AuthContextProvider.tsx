@@ -25,6 +25,7 @@ interface AuthContextValue {
   profileLoading: boolean;
   error: string | null;
   signInAsGuest: () => Promise<AuthUser>;
+  signInWithGoogle: () => Promise<AuthUser>;
   signOut: () => Promise<void>;
   getIdToken: () => Promise<string | null>;
   updateDisplayName: (displayName: string) => Promise<User>;
@@ -176,6 +177,17 @@ export function AuthContextProvider({
     return nextUser;
   }, [authProvider]);
 
+  const signInWithGoogle = useCallback(async () => {
+    if (!authProvider.signInWithGoogle) {
+      throw new OddMindError("UNSUPPORTED", "Google sign-in not supported on this provider", 400);
+    }
+    const nextUser = await authProvider.signInWithGoogle();
+    logger.info("auth.sign_in_google", { uid: nextUser.uid, email: nextUser.email ?? undefined });
+    setUser(nextUser);
+    await loadProfile(nextUser);
+    return nextUser;
+  }, [authProvider, loadProfile]);
+
   const signOut = useCallback(async () => {
     await authProvider.signOut();
     setUser(null);
@@ -227,6 +239,7 @@ export function AuthContextProvider({
       profileLoading,
       error,
       signInAsGuest,
+      signInWithGoogle,
       signOut,
       getIdToken,
       updateDisplayName,
@@ -240,6 +253,7 @@ export function AuthContextProvider({
       profileLoading,
       error,
       signInAsGuest,
+      signInWithGoogle,
       signOut,
       getIdToken,
       updateDisplayName,

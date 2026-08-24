@@ -1,36 +1,33 @@
 "use client";
 
-import { getFirebaseFirestore } from "@/infrastructure/firebase/client";
-import {
-  collection,
-  doc,
-  onSnapshot,
-  setDoc,
-  deleteDoc,
-  query,
-  where,
-  type Unsubscribe,
-} from "firebase/firestore";
-
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
     { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
+    { urls: "stun:global.stun.twilio.com:3478" },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 export class WebRtcVoiceService {
   private gameId: string | null = null;
   private myUid: string | null = null;
   private localStream: MediaStream | null = null;
+  private getIdToken: (() => Promise<string | null>) | null = null;
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private audioElements: Map<string, HTMLAudioElement> = new Map();
   private analysers: Map<string, AnalyserNode> = new Map();
+  private gainNodes: Map<string, GainNode> = new Map();
   private audioContext: AudioContext | null = null;
   private animFrameId: number | null = null;
-  private unsubscribeSignals: Unsubscribe | null = null;
+  private eventSource: EventSource | null = null;
+  private pendingCandidates: Map<string, any[]> = new Map();
   private speakingCallbacks: Set<(peerUid: string, isSpeaking: boolean) => void> = new Set();
+  private isMasterMuted: boolean = false;
+  private masterVolume: number = 1.0;
 
   onRemoteSpeaking(callback: (peerUid: string, isSpeaking: boolean) => void): () => void {
     this.speakingCallbacks.add(callback);
@@ -41,27 +38,58 @@ export class WebRtcVoiceService {
     this.speakingCallbacks.forEach((cb) => cb(peerUid, isSpeaking));
   }
 
+  setMasterMuted(muted: boolean) {
+    this.isMasterMuted = muted;
+    for (const audio of this.audioElements.values()) {
+      audio.muted = muted;
+      audio.volume = muted ? 0 : this.masterVolume;
+    }
+    for (const gainNode of this.gainNodes.values()) {
+      gainNode.gain.value = muted ? 0 : this.masterVolume;
+    }
+  }
+
+  getMasterMuted(): boolean {
+    return this.isMasterMuted;
+  }
+
+  setMasterVolume(vol: number) {
+    this.masterVolume = Math.max(0, Math.min(1, vol));
+    if (!this.isMasterMuted) {
+      for (const audio of this.audioElements.values()) {
+        audio.volume = this.masterVolume;
+      }
+      for (const gainNode of this.gainNodes.values()) {
+        gainNode.gain.value = this.masterVolume;
+      }
+    }
+  }
+
   joinVoice(
     gameId: string,
     myUid: string,
     peerUids: string[],
     localStream?: MediaStream | null,
+    getIdToken?: () => Promise<string | null>,
   ) {
+    if (getIdToken) {
+      this.getIdToken = getIdToken;
+    }
+
     if (this.gameId === gameId && this.myUid === myUid) {
-      if (localStream !== undefined && localStream !== null) {
+      if (localStream !== undefined) {
         this.updateLocalStream(localStream);
       }
       this.syncPeers(peerUids);
       return;
     }
 
-    this.leaveVoice();
+    const currentStream = localStream !== undefined ? localStream : this.localStream;
+    this.leaveVoice(false);
 
     this.gameId = gameId;
     this.myUid = myUid;
-    if (localStream !== undefined) {
-      this.localStream = localStream;
-    }
+    this.localStream = currentStream;
 
     const AudioCtx =
       window.AudioContext ||
@@ -89,10 +117,9 @@ export class WebRtcVoiceService {
       }
     }
 
-    // 2. Connect to new peers
+    // 2. Connect to new peers (alphabetically smaller UID creates the offer)
     for (const peerUid of validPeerSet) {
       if (!this.peerConnections.has(peerUid)) {
-        // Deterministic initiator: the alphabetically smaller UID initiates the offer
         if (this.myUid < peerUid) {
           this.initiateConnection(peerUid);
         }
@@ -102,81 +129,137 @@ export class WebRtcVoiceService {
 
   updateLocalStream(stream: MediaStream | null) {
     this.localStream = stream;
+    const newTrack = stream ? stream.getAudioTracks()[0] ?? null : null;
 
     for (const [, pc] of this.peerConnections.entries()) {
       const senders = pc.getSenders();
-      const audioSender = senders.find((s) => s.track?.kind === "audio");
+      const audioSender = senders.find(
+        (s) => s.track?.kind === "audio" || (s as any).kind === "audio",
+      );
 
-      if (stream) {
-        const newTrack = stream.getAudioTracks()[0];
-        if (newTrack) {
-          if (audioSender) {
-            audioSender.replaceTrack(newTrack).catch(() => {});
-          } else {
-            pc.addTrack(newTrack, stream);
-          }
-        }
-      } else {
-        if (audioSender) {
-          audioSender.replaceTrack(null).catch(() => {});
-        }
+      if (audioSender) {
+        audioSender.replaceTrack(newTrack).catch(() => {});
+      } else if (newTrack && stream) {
+        pc.addTrack(newTrack, stream);
       }
     }
   }
 
-  private getOrCreatePeerConnection(peerUid: string): RTCPeerConnection {
+  private createPeerConnection(peerUid: string, isInitiator: boolean): RTCPeerConnection {
     let pc = this.peerConnections.get(peerUid);
     if (pc) return pc;
 
     pc = new RTCPeerConnection(ICE_SERVERS);
     this.peerConnections.set(peerUid, pc);
 
-    if (this.localStream) {
-      this.localStream.getTracks().forEach((track) => {
-        pc!.addTrack(track, this.localStream!);
-      });
+    // If initiator: add track or add single sendrecv transceiver
+    if (isInitiator) {
+      if (this.localStream && this.localStream.getAudioTracks()[0]) {
+        pc.addTrack(this.localStream.getAudioTracks()[0]!, this.localStream);
+      } else {
+        try {
+          pc.addTransceiver("audio", { direction: "sendrecv" });
+        } catch {}
+      }
     }
 
     pc.onicecandidate = (event) => {
       if (event.candidate && this.gameId && this.myUid) {
         this.sendSignal(peerUid, {
           type: "candidate",
-          candidate: event.candidate.toJSON(),
+          candidate: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+          },
         });
       }
     };
 
     pc.ontrack = (event) => {
-      const remoteStream = event.streams[0];
+      console.log(`🔊 [WebRTC ONTRACK] Audio track received for peer ${peerUid}:`, event.track.id);
+      const remoteStream = event.streams[0] || new MediaStream([event.track]);
       if (!remoteStream) return;
 
-      let audio = this.audioElements.get(peerUid);
-      if (!audio) {
-        audio = new Audio();
-        audio.autoplay = true;
-        audio.setAttribute("playsinline", "true");
-        this.audioElements.set(peerUid, audio);
-      }
-      audio.srcObject = remoteStream;
-      audio.play().catch((err) => {
-        console.warn("[WebRTC audio autoplay]", err);
-      });
+      // 1. HTML5 Audio Element playback (DOM)
+      if (typeof document !== "undefined") {
+        let container = document.getElementById("oddmind-webrtc-audio");
+        if (!container) {
+          container = document.createElement("div");
+          container.id = "oddmind-webrtc-audio";
+          container.style.position = "fixed";
+          container.style.bottom = "0";
+          container.style.left = "0";
+          container.style.width = "0";
+          container.style.height = "0";
+          container.style.opacity = "0";
+          container.style.pointerEvents = "none";
+          document.body.appendChild(container);
+        }
 
+        let audio = this.audioElements.get(peerUid);
+        if (!audio) {
+          audio = document.createElement("audio");
+          audio.autoplay = true;
+          audio.setAttribute("playsinline", "true");
+          audio.setAttribute("webkit-playsinline", "true");
+          audio.setAttribute("id", `webrtc-audio-${peerUid}`);
+          container.appendChild(audio);
+          this.audioElements.set(peerUid, audio);
+        }
+        audio.srcObject = remoteStream;
+        audio.volume = this.isMasterMuted ? 0 : this.masterVolume;
+        audio.muted = this.isMasterMuted;
+
+        const playAudio = () => {
+          audio?.play().then(() => {
+            console.log(`🔊 [WebRTC HTML5 Audio playing for ${peerUid}]`);
+          }).catch((err) => {
+            console.warn(`[WebRTC audio play waiting for gesture for ${peerUid}]`, err);
+          });
+        };
+        playAudio();
+
+        const unlock = () => {
+          playAudio();
+          if (this.audioContext && this.audioContext.state === "suspended") {
+            this.audioContext.resume().catch(() => {});
+          }
+        };
+        document.addEventListener("click", unlock, { once: true });
+        document.addEventListener("touchstart", unlock, { once: true });
+        document.addEventListener("keydown", unlock, { once: true });
+      }
+
+      // 2. Direct Web Audio API Route (Bypasses HTML5 tag restrictions)
       if (this.audioContext && this.audioContext.state !== "closed") {
         try {
           if (this.audioContext.state === "suspended") {
             this.audioContext.resume().catch(() => {});
           }
           const source = this.audioContext.createMediaStreamSource(remoteStream);
+          
+          // Visualizer analyser
           const analyser = this.audioContext.createAnalyser();
           analyser.fftSize = 64;
           source.connect(analyser);
           this.analysers.set(peerUid, analyser);
-        } catch {}
+
+          // Audio output route through GainNode to destination (speakers)
+          const gainNode = this.audioContext.createGain();
+          gainNode.gain.value = this.isMasterMuted ? 0 : this.masterVolume;
+          source.connect(gainNode);
+          gainNode.connect(this.audioContext.destination);
+          this.gainNodes.set(peerUid, gainNode);
+          console.log(`🔊 [WebRTC WebAudio node connected to speakers for ${peerUid}]`);
+        } catch (err) {
+          console.warn("[WebRTC analyser setup warning]", err);
+        }
       }
     };
 
     pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC connectionState for ${peerUid}]: ${pc!.connectionState}`);
       if (pc!.connectionState === "disconnected" || pc!.connectionState === "failed") {
         this.closePeer(peerUid);
       }
@@ -187,7 +270,8 @@ export class WebRtcVoiceService {
 
   private async initiateConnection(peerUid: string) {
     try {
-      const pc = this.getOrCreatePeerConnection(peerUid);
+      console.log(`[WebRTC] Initiating offer to ${peerUid}`);
+      const pc = this.createPeerConnection(peerUid, true);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
@@ -203,66 +287,139 @@ export class WebRtcVoiceService {
   private async sendSignal(peerUid: string, signalData: any) {
     if (!this.gameId || !this.myUid) return;
     try {
-      const db = getFirebaseFirestore();
-      const signalId = `${this.myUid}_${peerUid}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      const signalRef = doc(db, "games", this.gameId, "signals", signalId);
-      await setDoc(signalRef, {
-        from: this.myUid,
-        to: peerUid,
-        data: signalData,
-        createdAt: Date.now(),
+      const token = this.getIdToken ? await this.getIdToken() : null;
+      if (!token) {
+        console.warn("[WebRTC] No auth token available to send signal");
+        return;
+      }
+
+      const res = await fetch(`/api/games/${this.gameId}/signal`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          to: peerUid,
+          data: signalData,
+        }),
       });
+
+      if (!res.ok) {
+        console.warn("[WebRTC sendSignal HTTP status]", res.status);
+      }
     } catch (err) {
       console.warn("[WebRTC sendSignal error]", err);
     }
   }
 
-  private listenToSignals() {
+  private async listenToSignals() {
     if (!this.gameId || !this.myUid) return;
-    const db = getFirebaseFirestore();
-    const signalsQuery = query(
-      collection(db, "games", this.gameId, "signals"),
-      where("to", "==", this.myUid),
-    );
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
 
-    this.unsubscribeSignals = onSnapshot(
-      signalsQuery,
-      (snapshot) => {
-        snapshot.docChanges().forEach(async (change) => {
-          if (change.type === "added") {
-            const data = change.doc.data();
-            const fromUid = data.from as string;
-            const signal = data.data;
+    try {
+      const token = this.getIdToken ? await this.getIdToken() : null;
+      if (!token) return;
 
-            // Clean up processed signal doc
-            deleteDoc(change.doc.ref).catch(() => {});
+      const url = `/api/games/${this.gameId}/signal?token=${encodeURIComponent(token)}`;
+      const es = new EventSource(url);
+      this.eventSource = es;
 
-            if (!fromUid || !signal) return;
+      es.onmessage = async (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          const fromUid = payload.from as string;
+          const signal = payload.data;
 
-            const pc = this.getOrCreatePeerConnection(fromUid);
+          if (!fromUid || !signal) return;
+          await this.handleIncomingSignal(fromUid, signal);
+        } catch (err) {
+          console.warn("[WebRTC SSE message error]", err);
+        }
+      };
 
-            if (signal.type === "offer") {
-              await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: signal.sdp }));
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              await this.sendSignal(fromUid, {
-                type: "answer",
-                sdp: answer.sdp,
-              });
-            } else if (signal.type === "answer") {
-              await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: signal.sdp }));
-            } else if (signal.type === "candidate") {
-              if (signal.candidate) {
-                await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(() => {});
-              }
-            }
-          }
-        });
-      },
-      (error) => {
-        console.warn("[WebRTC signal listener warning]", error.message);
-      },
-    );
+      es.onerror = (err) => {
+        console.warn("[WebRTC SSE reconnecting]", err);
+      };
+    } catch (err) {
+      console.warn("[WebRTC listenToSignals error]", err);
+    }
+  }
+
+  private async handleIncomingSignal(fromUid: string, signal: any) {
+    if (signal.type === "offer") {
+      console.log(`[WebRTC] Received offer from ${fromUid}`);
+      const pc = this.createPeerConnection(fromUid, false);
+
+      await pc.setRemoteDescription(
+        new RTCSessionDescription({ type: "offer", sdp: signal.sdp }),
+      );
+
+      // Set answerer transceiver direction to sendrecv so bidirectional slots are ready
+      pc.getTransceivers().forEach((t) => {
+        try {
+          t.direction = "sendrecv";
+        } catch {}
+      });
+
+      // Attach local track to the received transceiver if available
+      if (this.localStream && this.localStream.getAudioTracks()[0]) {
+        const audioTrack = this.localStream.getAudioTracks()[0]!;
+        const senders = pc.getSenders();
+        const audioSender = senders.find(
+          (s) => s.track?.kind === "audio" || (s as any).kind === "audio",
+        );
+        if (audioSender) {
+          await audioSender.replaceTrack(audioTrack);
+        } else {
+          pc.addTrack(audioTrack, this.localStream);
+        }
+      }
+
+      // Drain queued early ICE candidates
+      const queued = this.pendingCandidates.get(fromUid) || [];
+      this.pendingCandidates.delete(fromUid);
+      for (const cand of queued) {
+        await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+      }
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      console.log(`[WebRTC] Sending answer to ${fromUid}`);
+      await this.sendSignal(fromUid, {
+        type: "answer",
+        sdp: answer.sdp,
+      });
+    } else if (signal.type === "answer") {
+      console.log(`[WebRTC] Received answer from ${fromUid}`);
+      const pc = this.peerConnections.get(fromUid);
+      if (pc) {
+        await pc.setRemoteDescription(
+          new RTCSessionDescription({ type: "answer", sdp: signal.sdp }),
+        );
+
+        // Drain queued early ICE candidates
+        const queued = this.pendingCandidates.get(fromUid) || [];
+        this.pendingCandidates.delete(fromUid);
+        for (const cand of queued) {
+          await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+        }
+      }
+    } else if (signal.type === "candidate") {
+      const pc = this.peerConnections.get(fromUid);
+      if (signal.candidate) {
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(() => {});
+        } else {
+          const queued = this.pendingCandidates.get(fromUid) || [];
+          queued.push(signal.candidate);
+          this.pendingCandidates.set(fromUid, queued);
+        }
+      }
+    }
   }
 
   private startVolumeMonitoring() {
@@ -276,7 +433,7 @@ export class WebRtcVoiceService {
           sum += dataArray[i] ?? 0;
         }
         const avg = sum / dataArray.length;
-        this.notifySpeaking(peerUid, avg > 15);
+        this.notifySpeaking(peerUid, avg > 8);
       }
       this.animFrameId = requestAnimationFrame(loop);
     };
@@ -296,18 +453,24 @@ export class WebRtcVoiceService {
       audio.remove();
       this.audioElements.delete(peerUid);
     }
+    const gainNode = this.gainNodes.get(peerUid);
+    if (gainNode) {
+      gainNode.disconnect();
+      this.gainNodes.delete(peerUid);
+    }
     this.analysers.delete(peerUid);
+    this.pendingCandidates.delete(peerUid);
     this.notifySpeaking(peerUid, false);
   }
 
-  leaveVoice() {
+  leaveVoice(wipeStream = true) {
     if (this.animFrameId) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
     }
-    if (this.unsubscribeSignals) {
-      this.unsubscribeSignals();
-      this.unsubscribeSignals = null;
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
     }
     for (const peerUid of Array.from(this.peerConnections.keys())) {
       this.closePeer(peerUid);
@@ -318,7 +481,9 @@ export class WebRtcVoiceService {
     }
     this.gameId = null;
     this.myUid = null;
-    this.localStream = null;
+    if (wipeStream) {
+      this.localStream = null;
+    }
   }
 }
 
