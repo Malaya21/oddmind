@@ -12,6 +12,21 @@ const ICE_SERVERS: RTCConfiguration = {
   iceCandidatePoolSize: 10,
 };
 
+function optimizeAudioSdp(sdp?: string): string | undefined {
+  if (!sdp) return sdp;
+  if (sdp.includes("a=fmtp:111")) {
+    return sdp.replace(/a=fmtp:111 ([^\r\n]*)/g, (_match, p1) => {
+      let params = p1.trim();
+      if (!params.includes("stereo=")) params += ";stereo=0;sprop-stereo=0";
+      if (!params.includes("usedtx=")) params += ";usedtx=1";
+      if (!params.includes("useinbandfec=")) params += ";useinbandfec=1";
+      if (!params.includes("maxaveragebitrate=")) params += ";maxaveragebitrate=64000";
+      return `a=fmtp:111 ${params}`;
+    });
+  }
+  return sdp;
+}
+
 export class WebRtcVoiceService {
   private gameId: string | null = null;
   private myUid: string | null = null;
@@ -20,7 +35,6 @@ export class WebRtcVoiceService {
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private audioElements: Map<string, HTMLAudioElement> = new Map();
   private analysers: Map<string, AnalyserNode> = new Map();
-  private gainNodes: Map<string, GainNode> = new Map();
   private audioContext: AudioContext | null = null;
   private animFrameId: number | null = null;
   private eventSource: EventSource | null = null;
@@ -44,9 +58,6 @@ export class WebRtcVoiceService {
       audio.muted = muted;
       audio.volume = muted ? 0 : this.masterVolume;
     }
-    for (const gainNode of this.gainNodes.values()) {
-      gainNode.gain.value = muted ? 0 : this.masterVolume;
-    }
   }
 
   getMasterMuted(): boolean {
@@ -58,9 +69,6 @@ export class WebRtcVoiceService {
     if (!this.isMasterMuted) {
       for (const audio of this.audioElements.values()) {
         audio.volume = this.masterVolume;
-      }
-      for (const gainNode of this.gainNodes.values()) {
-        gainNode.gain.value = this.masterVolume;
       }
     }
   }
@@ -181,7 +189,7 @@ export class WebRtcVoiceService {
       const remoteStream = event.streams[0] || new MediaStream([event.track]);
       if (!remoteStream) return;
 
-      // 1. HTML5 Audio Element playback (DOM)
+      // 1. HTML5 Audio Element playback (Clean hardware output)
       if (typeof document !== "undefined") {
         let container = document.getElementById("oddmind-webrtc-audio");
         if (!container) {
@@ -213,7 +221,7 @@ export class WebRtcVoiceService {
 
         const playAudio = () => {
           audio?.play().then(() => {
-            console.log(`🔊 [WebRTC HTML5 Audio playing for ${peerUid}]`);
+            console.log(`🔊 [WebRTC Audio playing cleanly for ${peerUid}]`);
           }).catch((err) => {
             console.warn(`[WebRTC audio play waiting for gesture for ${peerUid}]`, err);
           });
@@ -231,27 +239,17 @@ export class WebRtcVoiceService {
         document.addEventListener("keydown", unlock, { once: true });
       }
 
-      // 2. Direct Web Audio API Route (Bypasses HTML5 tag restrictions)
+      // 2. Web Audio API for volume monitoring and visualizer ONLY (No destination duplication)
       if (this.audioContext && this.audioContext.state !== "closed") {
         try {
           if (this.audioContext.state === "suspended") {
             this.audioContext.resume().catch(() => {});
           }
           const source = this.audioContext.createMediaStreamSource(remoteStream);
-          
-          // Visualizer analyser
           const analyser = this.audioContext.createAnalyser();
           analyser.fftSize = 64;
           source.connect(analyser);
           this.analysers.set(peerUid, analyser);
-
-          // Audio output route through GainNode to destination (speakers)
-          const gainNode = this.audioContext.createGain();
-          gainNode.gain.value = this.isMasterMuted ? 0 : this.masterVolume;
-          source.connect(gainNode);
-          gainNode.connect(this.audioContext.destination);
-          this.gainNodes.set(peerUid, gainNode);
-          console.log(`🔊 [WebRTC WebAudio node connected to speakers for ${peerUid}]`);
         } catch (err) {
           console.warn("[WebRTC analyser setup warning]", err);
         }
@@ -273,11 +271,12 @@ export class WebRtcVoiceService {
       console.log(`[WebRTC] Initiating offer to ${peerUid}`);
       const pc = this.createPeerConnection(peerUid, true);
       const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      const optimizedSdp = optimizeAudioSdp(offer.sdp) || offer.sdp;
+      await pc.setLocalDescription(new RTCSessionDescription({ type: "offer", sdp: optimizedSdp }));
 
       await this.sendSignal(peerUid, {
         type: "offer",
-        sdp: offer.sdp,
+        sdp: optimizedSdp,
       });
     } catch (err) {
       console.warn("[WebRTC initiate error]", err);
@@ -387,11 +386,12 @@ export class WebRtcVoiceService {
       }
 
       const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      const optimizedSdp = optimizeAudioSdp(answer.sdp) || answer.sdp;
+      await pc.setLocalDescription(new RTCSessionDescription({ type: "answer", sdp: optimizedSdp }));
       console.log(`[WebRTC] Sending answer to ${fromUid}`);
       await this.sendSignal(fromUid, {
         type: "answer",
-        sdp: answer.sdp,
+        sdp: optimizedSdp,
       });
     } else if (signal.type === "answer") {
       console.log(`[WebRTC] Received answer from ${fromUid}`);
@@ -452,11 +452,6 @@ export class WebRtcVoiceService {
       audio.srcObject = null;
       audio.remove();
       this.audioElements.delete(peerUid);
-    }
-    const gainNode = this.gainNodes.get(peerUid);
-    if (gainNode) {
-      gainNode.disconnect();
-      this.gainNodes.delete(peerUid);
     }
     this.analysers.delete(peerUid);
     this.pendingCandidates.delete(peerUid);
